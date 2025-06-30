@@ -1,7 +1,12 @@
+# ✅ Install Required Libraries
+# (No need for chromadb now)
+
+# ✅ app.py (FAISS version)
 import streamlit as st
 import pandas as pd
 import openpyxl
-import chromadb
+import faiss
+import numpy as np
 from openpyxl.utils import get_column_letter
 from google.generativeai import configure, embed_content, GenerativeModel
 import tempfile
@@ -13,15 +18,13 @@ configure(api_key=st.secrets["GEMINI_API_KEY"])
 def col_to_letter(col_idx):
     return get_column_letter(col_idx)
 
-# ✅ Set up ChromaDB
-chroma_client = chromadb.Client()
-try:
-    chroma_client.delete_collection("excel_chunks")
-except:
-    pass
-collection = chroma_client.get_or_create_collection("excel_chunks")
+# ✅ In-memory FAISS Index Setup
+embedding_size = 768  # Size of Gemini embeddings
+index = faiss.IndexFlatL2(embedding_size)
+embedding_lookup = []
+metadata_lookup = []
 
-st.title("📊 Excel Q&A Chatbot (RAG-based)")
+st.title("📊 Excel Q&A Chatbot (RAG-based, FAISS)")
 
 uploaded_files = st.file_uploader("Upload one or more Excel files", type=["xlsx"], accept_multiple_files=True)
 
@@ -43,22 +46,21 @@ if uploaded_files:
                     chunk_lines.append(f"{col_name} (Col {col_letter}): {value}")
                     col_metadata.append((col_name, col_letter, str(value)))
                 chunk_text = "\n".join(chunk_lines)
+
                 embedding = embed_content(
                     model="models/embedding-001",
                     content=chunk_text,
                     task_type="retrieval_query"
                 ).get("embedding")
-                collection.add(
-                    ids=[str(row_id)],
-                    embeddings=[embedding],
-                    documents=[chunk_text],
-                    metadatas=[{
-                        "file": uploaded_file.name,
-                        "sheet": sheet_name,
-                        "row": idx + 2,
-                        "columns": str(col_metadata)
-                    }]
-                )
+
+                index.add(np.array([embedding], dtype=np.float32))
+                embedding_lookup.append(chunk_text)
+                metadata_lookup.append({
+                    "file": uploaded_file.name,
+                    "sheet": sheet_name,
+                    "row": idx + 2,
+                    "columns": str(col_metadata)
+                })
                 row_id += 1
 
     st.success(f"Indexed {row_id} rows across {len(uploaded_files)} file(s).")
@@ -71,18 +73,17 @@ if uploaded_files:
             task_type="retrieval_query"
         ).get("embedding")
 
-        results = collection.query(query_embeddings=[query_embedding], n_results=10)
-        docs = results["documents"][0]
-        metas = results["metadatas"][0]
+        D, I = index.search(np.array([query_embedding], dtype=np.float32), k=10)
+        results = [(embedding_lookup[i], metadata_lookup[i]) for i in I[0] if i < len(embedding_lookup)]
 
-        if not docs:
+        if not results:
             st.warning("No matching rows found.")
         else:
             question_lower = question.lower()
             keywords = [word.strip(".,?") for word in question_lower.split() if len(word) > 2]
 
             filtered = []
-            for doc, meta in zip(docs, metas):
+            for doc, meta in results:
                 doc_lower = doc.lower()
                 matched_keywords = [kw for kw in keywords if kw in doc_lower]
                 if matched_keywords:
@@ -91,7 +92,7 @@ if uploaded_files:
             if filtered:
                 best_doc, best_meta, _ = filtered[0]
             else:
-                best_doc, best_meta = docs[0], metas[0]
+                best_doc, best_meta = results[0]
 
             prompt = f"""
 You are an assistant answering a question using a row of an Excel file.
