@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
-from vector_store import vector_store
+from in_memory_vector_store import vector_store
+
 
 # 🧠 Configure Gemini
 genai.configure(api_key=st.secrets["gemini_api_key"])
