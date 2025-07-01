@@ -41,5 +41,22 @@ class InMemoryVectorStore:
         self.vectors = []
         self.texts = []
         self.metadata = []
+    
+
+    def chunk_excel_data(self, df, file_name, sheet_name, chunk_size=100) -> List[Dict[str, Any]]:
+        chunks = []
+        for i in range(0, len(df), chunk_size):
+            chunk_df = df.iloc[i:i + chunk_size]
+            text = chunk_df.to_csv(index=False)
+            metadata = {
+                "source": file_name,
+                "sheet": sheet_name,
+                "row_start": i + 1,
+                "row_end": min(i + chunk_size, len(df))
+            }
+            chunks.append({"text": text, "metadata": metadata})
+        return chunks
+
 
 vector_store = InMemoryVectorStore()
+
