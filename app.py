@@ -3,7 +3,6 @@ import pandas as pd
 import google.generativeai as genai
 from in_memory_vector_store import vector_store
 
-
 # 🧠 Configure Gemini
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-pro-latest')
@@ -65,12 +64,12 @@ uploaded_files = st.sidebar.file_uploader("Upload Excel or CSV", type=["xlsx", "
 
 # 🔄 File handling
 if uploaded_files:
-    vector_store.clear_collection()
+    vector_store.clear()
     for file in uploaded_files:
         st.sidebar.info(process_and_preview(file))
 
 if st.sidebar.button("Clear All Data", type="primary"):
-    vector_store.clear_collection()
+    vector_store.clear()
     st.session_state.messages = []
     st.sidebar.success("Data cleared")
 
