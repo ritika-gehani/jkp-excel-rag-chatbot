@@ -6,7 +6,7 @@ import pandas as pd
 class ExcelVectorStore:
     def __init__(self, collection_name: str = "excel_data"):
         self.collection_name = collection_name
-        self.client = chromadb.PersistentClient(path="./chroma_db")
+        self.client = chromadb.Client()  # In-memory only
         self.embedder = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
 
         try:
