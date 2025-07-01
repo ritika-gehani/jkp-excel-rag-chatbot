@@ -5,7 +5,7 @@ from in_memory_vector_store import vector_store
 
 
 # 🧠 Configure Gemini
-genai.configure(api_key=st.secrets["gemini_api_key"])
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-pro-latest')
 
 # 🧼 Initialize session
