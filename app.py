@@ -1,116 +1,85 @@
-# ✅ Install Required Libraries
-# (No need for chromadb now)
-
-# ✅ app.py (FAISS version)
 import streamlit as st
 import pandas as pd
-import openpyxl
-import faiss
-import numpy as np
-from openpyxl.utils import get_column_letter
-from google.generativeai import configure, embed_content, GenerativeModel
-import tempfile
+import google.generativeai as genai
+from vector_store import vector_store
 
-# ✅ Configure Gemini API Key
-configure(api_key=st.secrets["GEMINI_API_KEY"])
+# 🧠 Configure Gemini
+genai.configure(api_key=st.secrets["gemini_api_key"])
+model = genai.GenerativeModel('gemini-1.5-pro-latest')
 
-# ✅ Helper: Convert column index to letter
-def col_to_letter(col_idx):
-    return get_column_letter(col_idx)
+# 🧼 Initialize session
+st.session_state.setdefault("messages", [])
 
-# ✅ In-memory FAISS Index Setup
-embedding_size = 768  # Size of Gemini embeddings
-index = faiss.IndexFlatL2(embedding_size)
-embedding_lookup = []
-metadata_lookup = []
-
-st.title("📊 Excel Q&A Chatbot (RAG-based, FAISS)")
-
-uploaded_files = st.file_uploader("Upload one or more Excel files", type=["xlsx"], accept_multiple_files=True)
-
-if uploaded_files:
-    row_id = 0
-    for uploaded_file in uploaded_files:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-            tmp.write(uploaded_file.read())
-            tmp_path = tmp.name
-
-        xls = pd.ExcelFile(tmp_path)
-        for sheet_name in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet_name)
-            for idx, row in df.iterrows():
-                chunk_lines = []
-                col_metadata = []
-                for col_idx, (col_name, value) in enumerate(row.items(), start=1):
-                    col_letter = col_to_letter(col_idx)
-                    chunk_lines.append(f"{col_name} (Col {col_letter}): {value}")
-                    col_metadata.append((col_name, col_letter, str(value)))
-                chunk_text = "\n".join(chunk_lines)
-
-                embedding = embed_content(
-                    model="models/embedding-001",
-                    content=chunk_text,
-                    task_type="retrieval_query"
-                ).get("embedding")
-
-                index.add(np.array([embedding], dtype=np.float32))
-                embedding_lookup.append(chunk_text)
-                metadata_lookup.append({
-                    "file": uploaded_file.name,
-                    "sheet": sheet_name,
-                    "row": idx + 2,
-                    "columns": str(col_metadata)
-                })
-                row_id += 1
-
-    st.success(f"Indexed {row_id} rows across {len(uploaded_files)} file(s).")
-
-    question = st.text_input("Ask a question about the Excel file(s):")
-    if question:
-        query_embedding = embed_content(
-            model="models/embedding-001",
-            content=question,
-            task_type="retrieval_query"
-        ).get("embedding")
-
-        D, I = index.search(np.array([query_embedding], dtype=np.float32), k=10)
-        results = [(embedding_lookup[i], metadata_lookup[i]) for i in I[0] if i < len(embedding_lookup)]
-
-        if not results:
-            st.warning("No matching rows found.")
+# 📁 File processing
+def process_and_preview(file):
+    ext = file.name.split('.')[-1].lower()
+    try:
+        if ext in ['xlsx', 'xls']:
+            xls = pd.ExcelFile(file)
+            for sheet in xls.sheet_names:
+                df = pd.read_excel(file, sheet_name=sheet)
+                vector_store.add_documents(vector_store.chunk_excel_data(df, file.name, sheet))
+                with st.sidebar.expander(f"Preview {file.name} - {sheet}"):
+                    st.dataframe(df.head(10))
+            return f"Processed {file.name} ({len(xls.sheet_names)} sheets)"
+        elif ext == 'csv':
+            df = pd.read_csv(file)
+            vector_store.add_documents(vector_store.chunk_excel_data(df, file.name, "CSV"))
+            with st.sidebar.expander(f"Preview {file.name}"):
+                st.dataframe(df.head(10))
+            return f"Processed {file.name}"
         else:
-            question_lower = question.lower()
-            keywords = [word.strip(".,?") for word in question_lower.split() if len(word) > 2]
+            return f"Unsupported file: {file.name}"
+    except Exception as e:
+        return f"Error reading {file.name}: {e}"
 
-            filtered = []
-            for doc, meta in results:
-                doc_lower = doc.lower()
-                matched_keywords = [kw for kw in keywords if kw in doc_lower]
-                if matched_keywords:
-                    filtered.append((doc, meta, matched_keywords))
-
-            if filtered:
-                best_doc, best_meta, _ = filtered[0]
+# 🤖 Chat handling
+def handle_chat(prompt):
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    with st.chat_message("assistant"):
+        if not uploaded_files:
+            msg = "Please upload Excel/CSV files first before asking questions."
+        else:
+            results = vector_store.query(prompt, k=10)
+            if not results:
+                msg = "No relevant data found. Try a different query or upload more data."
             else:
-                best_doc, best_meta = results[0]
+                context = "\n\n".join([f"[{i+1}] {r['text']}" for i, r in enumerate(results)])
+                try:
+                    with st.spinner("Thinking..."):
+                        response = model.generate_content(
+                            f"Analyze this data and answer: {prompt}\n\nData:\n{context}",
+                            generation_config={"max_output_tokens": 1000, "temperature": 0.3}
+                        )
+                        msg = response.text
+                except Exception as e:
+                    msg = f"Error: {e}"
+        st.markdown(msg)
+        st.session_state.messages.append({"role": "assistant", "content": msg})
 
-            prompt = f"""
-You are an assistant answering a question using a row of an Excel file.
+# 📤 Sidebar
+st.sidebar.title("📤 Upload Files")
+uploaded_files = st.sidebar.file_uploader("Upload Excel or CSV", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
 
-QUESTION: {question}
+# 🔄 File handling
+if uploaded_files:
+    vector_store.clear_collection()
+    for file in uploaded_files:
+        st.sidebar.info(process_and_preview(file))
 
-MATCHED ROW (from Excel):
-{best_doc}
+if st.sidebar.button("Clear All Data", type="primary"):
+    vector_store.clear_collection()
+    st.session_state.messages = []
+    st.sidebar.success("Data cleared")
 
-Provide a clear and concise answer based only on this matched row.
-"""
-            model = GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content(prompt)
+# 💬 Chat display
+st.title("📊 Excel/CSV Chatbot")
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-            st.subheader("🤖 Answer")
-            st.write(response.text.strip())
-
-            st.subheader("📁 Source Info")
-            st.write(f"**File**: {best_meta['file']}")
-            st.write(f"**Sheet**: {best_meta['sheet']}")
-            st.write(f"**Row**: {best_meta['row']}")
+# 📝 Chat input
+if prompt := st.chat_input("Ask about your data"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    handle_chat(prompt)
